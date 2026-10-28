@@ -25,10 +25,22 @@ I'm a complete beginner at coding and I'm learning JavaScript while building thi
 
 ## Roadmap (in order)
 
-1. **Backup:** an "Export" button that shows all my data as text I can copy, and an "Import" box that restores it. Ask before overwriting existing data.
-2. **Recurring expenses:** rent and subscriptions get added automatically each month, without creating duplicates.
-3. **Monthly chart:** total spending per month for the last 6 months, with a simple hand-drawn SVG chart (no chart library).
-4. **Savings goals:** set a goal (for example, a trip) with a target amount and date, log deposits, and show progress and how much I need to save per month.
+1. **Edit an expense:** tap an expense in the list to change its amount, category, date or note, instead of deleting and re-adding it.
+2. **Spanish in Quick add:** understand Spanish words too, like `ayer` (yesterday), `hoy` (today), `lunes`…`domingo` (weekdays), and category words like `comida` or `cena`. Good one to try in hint mode.
+3. **Category breakdown:** for the month on screen, a simple hand-drawn SVG chart showing which categories the money went to (no chart library).
+4. **Merge restore:** a second Restore option that adds the expenses from a backup that are missing, instead of replacing everything. Makes moving data between phone and laptop safe. Ask before changing any data.
+5. **Spreadsheet export:** a button that gives my expenses as CSV text I can paste into Google Sheets or Excel.
+6. **AI extras (optional, decide later):** use my own Claude API key (stored only on my device, never in the code) to read a receipt photo into the Add expense form, or to give a short plain-language review of my month. Always let me check before anything is saved, and only send the data the feature needs.
+
+## Done
+
+- Backup: copy all data as text, restore it (replaces everything, asks first, with Undo).
+- Monthly expenses: added automatically at the start of each month, without duplicates.
+- 6-month chart: spending per month with a budget line; tap a bar to jump to that month.
+- Quick add: type "lunch 12,50 yesterday" and the form fills itself in (no AI).
+- Savings goals: target and date, deposits and withdrawals, how much to save per month.
+
+The saved data (key `pocket-budget-v1`) holds `budgets`, `expenses`, `recurring` and `goals`. Older saved data or backups may be missing the newer lists, so always treat a missing list as empty.
 
 ## Deployment
 
