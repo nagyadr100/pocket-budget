@@ -138,6 +138,11 @@
   .list .what small { display: block; color: var(--muted); font-size: 0.8rem; }
   .del { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 1.1rem; padding: 4px 6px; border-radius: 6px; }
   .del:hover { color: var(--bad); }
+  #list li { cursor: pointer; }                                     /* tap an expense to edit it */
+  #list li.editing { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .scope { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin: 0; display: grid; gap: 8px; }
+  .scope legend { padding: 0 4px; }
+  .check[hidden], .scope[hidden] { display: none; }                /* "display" above would otherwise beat "hidden" */
   .tag { font-size: 0.68rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--warn); font-weight: 600; }
   .empty { color: var(--muted); padding: 12px 0; margin: 0; }
 
@@ -197,19 +202,25 @@
   </section>
 
   <section class="section">
-    <h2>Add expense</h2>
+    <h2 id="form-title">Add expense</h2>
     <form id="add-form" novalidate>
       <input id="quick" placeholder='Quick add, e.g. "lunch 12,50 yesterday"' aria-label="Quick add" autocomplete="off" enterkeyhint="done">
-      <p class="hint">Fills in the fields below. Check them, then tap Add expense.</p>
+      <p class="hint" id="quick-hint">Fills in the fields below. Check them, then tap Add expense.</p>
       <input id="amount" inputmode="decimal" placeholder="0,00 €" aria-label="Amount in euros" autocomplete="off">
       <div class="row">
         <select id="category" aria-label="Category"></select>
         <input id="date" type="date" aria-label="Date">
       </div>
       <input id="note" placeholder="Note (optional), e.g. Mercadona" aria-label="Note" autocomplete="off">
-      <label class="check"><input type="checkbox" id="repeat"> Repeats every month (rent, subscriptions…)</label>
+      <label class="check" id="repeat-label"><input type="checkbox" id="repeat"> Repeats every month (rent, subscriptions…)</label>
+      <fieldset class="scope" id="edit-scope" hidden>
+        <legend class="label">Monthly expense: change…</legend>
+        <label class="check"><input type="radio" name="scope" value="one" checked> Just this month</label>
+        <label class="check"><input type="radio" name="scope" value="future"> This and future months</label>
+      </fieldset>
       <p class="error" id="form-error" hidden></p>
-      <button class="primary" type="submit">Add expense</button>
+      <button class="primary" type="submit" id="submit-btn">Add expense</button>
+      <button class="ghost" type="button" id="cancel-edit" hidden>Cancel</button>
     </form>
   </section>
 
@@ -386,6 +397,7 @@ const state = {
   recurring: saved?.recurring ?? [],               // monthly expenses (older saved data has none: start empty)
   goals: saved?.goals ?? [],                       // savings goals (same: start empty if missing)
   viewMonth: monthOf(todayISO()),                  // which month is on screen (not saved)
+  editingId: null,                                 // id of the expense being edited, or null when adding (not saved)
 };
 
 // RECURRING: each monthly expense remembers the last month it was added ("lastMonth").
@@ -393,6 +405,13 @@ const state = {
 // Because "lastMonth" moves forward, opening the app again never adds duplicates,
 // and deleting one month's copy doesn't bring it back.
 // Returns how many expenses were added.
+// Which monthly item an expense came from (or undefined). Copies have ids like "rec-<item id>-2026-10",
+// and the very first one has the same id as the item itself.
+function templateOf(expense) {
+  if (!expense.recurring) return undefined;
+  return state.recurring.find(r => expense.id === r.id || expense.id.startsWith(`rec-${r.id}-`));
+}
+
 function addRecurringExpenses() {
   const thisMonth = monthOf(todayISO());
   let added = 0;
@@ -477,12 +496,20 @@ function render() {
   const sorted = [...monthItems].sort((a, b) => b.date.localeCompare(a.date) || String(b.id).localeCompare(String(a.id)));
   const catName = id => CATEGORIES.find(c => c.id === id)?.name ?? id;
   $("list").innerHTML = sorted.length ? sorted.map(e => `
-    <li>
+    <li data-edit="${e.id}" class="${e.id === state.editingId ? "editing" : ""}">
       <span class="date num">${e.date.slice(8)}/${e.date.slice(5, 7)}</span>
       <span class="what">${esc(e.note || catName(e.cat))}<small>${catName(e.cat)}${e.example ? ' · <span class="tag">Example</span>' : ""}${e.recurring ? ' · <span class="tag">Monthly</span>' : ""}</small></span>
       <span class="num">${eur.format(e.amount)}</span>
       <button class="del" data-del="${e.id}" aria-label="Delete expense">×</button>
     </li>`).join("") : `<p class="empty">Nothing logged this month yet. Add your first expense above.</p>`;
+
+  // --- Add / edit form: same form, different words ---
+  const editing = state.expenses.find(e => e.id === state.editingId);
+  $("form-title").textContent = editing ? "Edit expense" : "Add expense";
+  $("submit-btn").textContent = editing ? "Save changes" : "Add expense";
+  $("cancel-edit").hidden = !editing;
+  $("quick").hidden = $("quick-hint").hidden = $("repeat-label").hidden = Boolean(editing);   // only for new expenses
+  $("edit-scope").hidden = !(editing && templateOf(editing));                                  // only for monthly copies
 
   // --- Monthly expenses ---
   $("recurring-list").innerHTML = state.recurring.length ? state.recurring.map(r => `
@@ -604,6 +631,41 @@ $("add-form").addEventListener("submit", ev => {
   }
   $("form-error").hidden = true;
   const date = $("date").value || todayISO();
+
+  // EDITING: change the existing expense instead of adding a new one.
+  const editing = state.expenses.find(e => e.id === state.editingId);
+  if (editing) {
+    const changes = { date, cat: $("category").value, amount: Math.round(amount * 100) / 100, note: $("note").value.trim() };
+    const snapshots = [[editing, { ...editing }]];                 // copies of everything we change, for Undo
+    const template = templateOf(editing);
+    const future = template && document.querySelector('input[name="scope"]:checked').value === "future";
+    if (future) {
+      // Change the monthly item, so months that haven't been added yet use the new values...
+      snapshots.push([template, { ...template }]);
+      const day = Number(date.slice(8, 10));
+      Object.assign(template, { cat: changes.cat, amount: changes.amount, note: changes.note, day });
+      // ...and the copies already added for later months.
+      state.expenses
+        .filter(e => e !== editing && templateOf(e) === template && monthOf(e.date) > monthOf(editing.date))
+        .forEach(e => {
+          snapshots.push([e, { ...e }]);
+          const ym = monthOf(e.date);
+          Object.assign(e, { cat: changes.cat, amount: changes.amount, note: changes.note, date: `${ym}-${pad(Math.min(day, daysInMonth(ym)))}` });
+        });
+    }
+    Object.assign(editing, changes);
+    delete editing.example;                                        // an edited example is now yours
+    state.viewMonth = monthOf(date);
+    stopEditing();
+    save(); render();
+    showToast(`Changes saved${future ? " · future months too" : ""}`, () => {
+      snapshots.forEach(([thing, copy]) => Object.assign(thing, copy));   // put every old value back
+      save(); render();
+    });
+    return;
+  }
+
+  // ADDING a new expense.
   const id = Date.now().toString(36);
   const repeats = $("repeat").checked;
   const expense = { id, date, cat: $("category").value, amount: Math.round(amount * 100) / 100, note: $("note").value.trim() };
@@ -620,6 +682,14 @@ $("add-form").addEventListener("submit", ev => {
   $("amount").value = ""; $("note").value = ""; $("repeat").checked = false; $("quick").value = "";
   showToast(`Added ${eur.format(amount)}${repeats ? " · repeats monthly" : ""}`);
 });
+
+// Leave edit mode and empty the form.
+function stopEditing() {
+  state.editingId = null;
+  $("amount").value = ""; $("note").value = ""; $("date").value = todayISO();
+  $("form-error").hidden = true;
+}
+$("cancel-edit").addEventListener("click", () => { stopEditing(); render(); });
 
 // QUICK ADD: read a sentence like "lunch with Ana 12,50 yesterday" and work out
 // the amount, date, category and note. It only fills in the form; you still tap Add.
@@ -688,9 +758,23 @@ document.addEventListener("click", ev => {
     const idx = state.expenses.findIndex(e => e.id === del.dataset.del);
     if (idx > -1) {
       const [removed] = state.expenses.splice(idx, 1);
+      if (removed.id === state.editingId) stopEditing();          // deleted the one being edited
       save(); render();
       showToast("Expense deleted", () => { state.expenses.push(removed); save(); render(); });
     }
+  }
+  const row = ev.target.closest("[data-edit]");                   // tap an expense (not its ×): edit it
+  if (row && !del) {
+    const e = state.expenses.find(x => x.id === row.dataset.edit);
+    state.editingId = e.id;
+    $("amount").value = String(e.amount).replace(".", ",");
+    $("category").value = e.cat;
+    $("date").value = e.date;
+    $("note").value = e.note || "";
+    $("form-error").hidden = true;
+    document.querySelector('input[name="scope"][value="one"]').checked = true;   // default: just this month
+    render();
+    $("form-title").scrollIntoView({ behavior: "smooth", block: "start" });
   }
   const col = ev.target.closest("[data-month]");                  // tap a bar in the chart: go to that month
   if (col) { state.viewMonth = col.dataset.month; render(); }
