@@ -91,6 +91,17 @@
   .bar .fill.over { background: var(--bad); }
   .bar .today { position: absolute; top: -3px; width: 2px; height: 14px; background: var(--fg); opacity: 0.45; border-radius: 1px; }
 
+  /* 6-month chart (SVG). Colors come from the same tokens, so dark mode just works. */
+  .chart svg { display: block; width: 100%; height: auto; }
+  .chart .col { cursor: pointer; }
+  .chart .b { fill: var(--accent); opacity: 0.45; }
+  .chart .b.over { fill: var(--bad); }
+  .chart .current .b { opacity: 1; }
+  .chart text { fill: var(--muted); font-family: var(--font-body); font-size: 11px; text-anchor: middle; }
+  .chart .current text { fill: var(--fg); font-weight: 600; }
+  .chart .base { stroke: var(--line); stroke-width: 1; }
+  .chart .budget { stroke: var(--fg); stroke-width: 1; stroke-dasharray: 4 4; opacity: 0.5; }
+
   /* Add-expense form */
   form { display: grid; gap: 10px; }
   .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -167,6 +178,14 @@
   <section class="summary" id="summary" aria-label="Month summary"></section>
 
   <section class="section">
+    <div class="section-head">
+      <h2>Last 6 months</h2>
+      <span class="label">- - - = budget</span>
+    </div>
+    <div class="chart" id="chart"></div>
+  </section>
+
+  <section class="section">
     <h2>Add expense</h2>
     <form id="add-form" novalidate>
       <input id="amount" inputmode="decimal" placeholder="0,00 €" aria-label="Amount in euros" autocomplete="off">
@@ -230,6 +249,7 @@ const CATEGORIES = [
 
 const STORAGE_KEY = "pocket-budget-v1";
 const eur = new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR" });
+const eurShort = new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR", maximumFractionDigits: 0 });  // "976 €", for the chart
 
 // ---------------------------------------------------------------------------
 // 2. DATE HELPERS: dates are stored as text like "2026-10-22".
@@ -389,6 +409,9 @@ function render() {
     </div>
     ${paceHTML ? `<div>${paceHTML}</div>` : ""}`;
 
+  // --- 6-month chart ---
+  $("chart").innerHTML = chartHTML(ym, totalBudget);
+
   // --- Categories ---
   $("cats").innerHTML = CATEGORIES.map(c => {
     const limit = Number(state.budgets[c.id]) || 0;
@@ -430,6 +453,46 @@ function render() {
   $("banner").innerHTML = hasExamples
     ? `<div class="banner"><span>These are example expenses so you can see how it works.</span><button class="ghost" id="clear-ex">Clear examples</button></div>`
     : "";
+}
+
+// The 6-month chart, drawn as SVG (shapes described as text).
+// One bar per month: its height is that month's total, scaled so the biggest value fits.
+function chartHTML(endMonth, budget) {
+  const months = [];
+  for (let i = 5; i >= 0; i--) months.push(shiftMonth(endMonth, -i));      // oldest first
+  const totals = months.map(ym => state.expenses
+    .filter(e => monthOf(e.date) === ym)
+    .reduce((sum, e) => sum + e.amount, 0));
+
+  const W = 300, H = 150;                     // drawing size; the SVG stretches to fit the screen
+  const plotTop = 20, plotH = 108;            // room above for the amount label, below for month names
+  const slot = W / months.length, barW = 30;
+  const top = Math.max(...totals, budget, 1); // the tallest thing (a bar or the budget line) reaches the top
+  const yOf = value => plotTop + plotH - (value / top) * plotH;   // euros -> position (SVG y grows downward)
+
+  const cols = months.map((ym, i) => {
+    const total = totals[i];
+    const [y, m] = ym.split("-").map(Number);
+    const date = new Date(y, m - 1, 1);
+    const center = i * slot + slot / 2;
+    const isCurrent = ym === endMonth;
+    const over = budget > 0 && total > budget;
+    return `
+      <g class="col ${isCurrent ? "current" : ""}" data-month="${ym}">
+        <title>${date.toLocaleDateString("en-GB", { month: "long", year: "numeric" })}: ${eur.format(total)}</title>
+        <rect x="${i * slot}" y="0" width="${slot}" height="${H}" fill="transparent"></rect>
+        <rect class="b ${over ? "over" : ""}" x="${center - barW / 2}" y="${yOf(total)}" width="${barW}" height="${plotTop + plotH - yOf(total)}" rx="4"></rect>
+        ${isCurrent ? `<text x="${center}" y="${yOf(total) - 6}">${eurShort.format(total)}</text>` : ""}
+        <text x="${center}" y="${H - 4}">${date.toLocaleDateString("en-GB", { month: "short" })}</text>
+      </g>`;
+  }).join("");
+
+  const budgetLine = budget > 0 ? `<line class="budget" x1="0" x2="${W}" y1="${yOf(budget)}" y2="${yOf(budget)}"></line>` : "";
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Spending per month for the last 6 months">
+    ${cols}
+    <line class="base" x1="0" x2="${W}" y1="${plotTop + plotH}" y2="${plotTop + plotH}"></line>
+    ${budgetLine}
+  </svg>`;
 }
 
 // A progress bar. "today" draws a small tick showing how much of the month has passed.
@@ -483,6 +546,8 @@ document.addEventListener("click", ev => {
       showToast("Expense deleted", () => { state.expenses.push(removed); save(); render(); });
     }
   }
+  const col = ev.target.closest("[data-month]");                  // tap a bar in the chart: go to that month
+  if (col) { state.viewMonth = col.dataset.month; render(); }
   const stop = ev.target.closest("[data-stop]");
   if (stop) {
     const idx = state.recurring.findIndex(r => r.id === stop.dataset.stop);
