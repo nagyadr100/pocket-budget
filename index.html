@@ -188,6 +188,8 @@
   <section class="section">
     <h2>Add expense</h2>
     <form id="add-form" novalidate>
+      <input id="quick" placeholder='Quick add, e.g. "lunch 12,50 yesterday"' aria-label="Quick add" autocomplete="off" enterkeyhint="done">
+      <p class="hint">Fills in the fields below. Check them, then tap Add expense.</p>
       <input id="amount" inputmode="decimal" placeholder="0,00 €" aria-label="Amount in euros" autocomplete="off">
       <div class="row">
         <select id="category" aria-label="Category"></select>
@@ -236,15 +238,16 @@
 // ---------------------------------------------------------------------------
 // 1. SETTINGS: categories and their default monthly limits (in euros).
 //    Edit this list to change your categories.
+//    "words" are what Quick add looks for (lowercase). Add your own shops and habits!
 // ---------------------------------------------------------------------------
 const CATEGORIES = [
-  { id: "rent",      name: "Rent & bills",    limit: 700 },
-  { id: "groceries", name: "Groceries",       limit: 250 },
-  { id: "eating",    name: "Eating out",      limit: 120 },
-  { id: "transport", name: "Transport",       limit: 40  },
-  { id: "subs",      name: "Subscriptions",   limit: 30  },
-  { id: "fun",       name: "Fun & going out", limit: 100 },
-  { id: "other",     name: "Other",           limit: 60  },
+  { id: "rent",      name: "Rent & bills",    limit: 700, words: ["rent", "bills", "electricity", "water", "gas", "internet", "wifi"] },
+  { id: "groceries", name: "Groceries",       limit: 250, words: ["mercadona", "lidl", "aldi", "carrefour", "dia", "consum", "bonpreu", "supermarket", "groceries"] },
+  { id: "eating",    name: "Eating out",      limit: 120, words: ["lunch", "dinner", "breakfast", "brunch", "coffee", "cafe", "restaurant", "tapas", "pizza", "burger"] },
+  { id: "transport", name: "Transport",       limit: 40,  words: ["metro", "bus", "taxi", "uber", "cabify", "train", "renfe", "bicing", "parking", "petrol"] },
+  { id: "subs",      name: "Subscriptions",   limit: 30,  words: ["spotify", "netflix", "hbo", "disney", "prime", "icloud", "youtube", "gym", "subscription"] },
+  { id: "fun",       name: "Fun & going out", limit: 100, words: ["cinema", "movie", "concert", "bar", "drinks", "party", "club", "museum", "tickets"] },
+  { id: "other",     name: "Other",           limit: 60,  words: [] },
 ];
 
 const STORAGE_KEY = "pocket-budget-v1";
@@ -259,6 +262,11 @@ const toISO = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate(
 const todayISO = () => toISO(new Date());
 const monthOf = iso => iso.slice(0, 7);                         // "2026-10-22" -> "2026-10"
 const daysInMonth = ym => { const [y, m] = ym.split("-").map(Number); return new Date(y, m, 0).getDate(); };
+function shiftDay(iso, delta) {                                // "2026-10-01", -1 -> "2026-09-30"
+  const [y, m, d] = iso.split("-").map(Number);
+  return toISO(new Date(y, m - 1, d + delta));
+}
+const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];  // same order as getDay()
 function shiftMonth(ym, delta) {
   const [y, m] = ym.split("-").map(Number);
   const d = new Date(y, m - 1 + delta, 1);
@@ -531,8 +539,68 @@ $("add-form").addEventListener("submit", ev => {
   addRecurringExpenses();
   state.viewMonth = monthOf(date);                                 // jump to the month you just added to
   save(); render();
-  $("amount").value = ""; $("note").value = ""; $("repeat").checked = false;
+  $("amount").value = ""; $("note").value = ""; $("repeat").checked = false; $("quick").value = "";
   showToast(`Added ${eur.format(amount)}${repeats ? " · repeats monthly" : ""}`);
+});
+
+// QUICK ADD: read a sentence like "lunch with Ana 12,50 yesterday" and work out
+// the amount, date, category and note. It only fills in the form; you still tap Add.
+function parseQuick(text) {
+  const today = todayISO();
+  const result = { amount: "", date: today, cat: "", note: "" };
+  const noteWords = [];
+
+  text.trim().split(/\s+/).forEach(word => {
+    const w = word.toLowerCase();
+    const money = w.replace("€", "");
+    const dayMonth = w.match(/^(\d{1,2})\/(\d{1,2})$/);         // "3/10" -> ["3/10", "3", "10"]
+
+    if (!result.amount && /^\d+([.,]\d{1,2})?$/.test(money)) {   // a number like 12, 12,50 or 12.50
+      result.amount = money;
+    } else if (w === "today") {
+      result.date = today;
+    } else if (w === "yesterday") {
+      result.date = shiftDay(today, -1);
+    } else if (WEEKDAYS.includes(w)) {                            // most recent day with that name (today counts)
+      const daysAgo = (new Date().getDay() - WEEKDAYS.indexOf(w) + 7) % 7;
+      result.date = shiftDay(today, -daysAgo);
+    } else if (dayMonth) {                                        // day/month, Spanish style
+      const [, d, m] = dayMonth.map(Number);
+      let date = new Date(Number(today.slice(0, 4)), m - 1, d);
+      if (date.getMonth() !== m - 1) return;                      // not a real date (like 31/2): ignore it
+      if (toISO(date) > today) date = new Date(date.getFullYear() - 1, m - 1, d);  // in the future? must be last year
+      result.date = toISO(date);
+    } else if (w === "€" || w === "eur" || w === "euros" || w === "on") {
+      // little words we don't want in the note
+    } else {
+      if (!result.cat) {
+        const match = CATEGORIES.find(c => c.words.includes(w));
+        if (match) result.cat = match.id;
+      }
+      noteWords.push(word);                                       // keep the original spelling for the note
+    }
+  });
+
+  result.note = noteWords.join(" ");
+  result.note = result.note.charAt(0).toUpperCase() + result.note.slice(1);   // "lunch" -> "Lunch"
+
+  // No keyword matched? Learn from the past: find your latest expense whose note
+  // starts with the same word, and use its category.
+  if (!result.cat && noteWords.length) {
+    const first = noteWords[0].toLowerCase();
+    const past = [...state.expenses].reverse().find(e => (e.note || "").toLowerCase().split(" ")[0] === first);
+    if (past) result.cat = past.cat;
+  }
+  return result;
+}
+
+// Every time you type in Quick add, fill in the form below.
+$("quick").addEventListener("input", () => {
+  const q = parseQuick($("quick").value);
+  $("amount").value = q.amount;
+  $("date").value = q.date;
+  $("category").value = q.cat || "other";
+  $("note").value = q.note;
 });
 
 // Event delegation: one listener on the page handles buttons that render() creates later.
