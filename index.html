@@ -141,6 +141,17 @@
   .tag { font-size: 0.68rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--warn); font-weight: 600; }
   .empty { color: var(--muted); padding: 12px 0; margin: 0; }
 
+  /* Savings goals */
+  .goals { display: grid; gap: 12px; }
+  .goal { display: grid; gap: 8px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+  .goal-top { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .goal-name { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+  .goal-money { color: var(--muted); font-size: 0.9rem; }
+  .goal-money .num { color: var(--fg); }
+  .goal .hint.done { color: var(--good); font-weight: 600; }
+  .bar .fill.good { background: var(--good); }
+  .deposit { grid-template-columns: 1fr auto; gap: 8px; }
+
   /* "Repeats every month" tickbox */
   .check { display: flex; align-items: center; gap: 8px; font-size: 0.9rem; cursor: pointer; }
   .check input { width: 18px; height: 18px; margin: 0; padding: 0; accent-color: var(--accent); }
@@ -221,6 +232,20 @@
   </section>
 
   <section class="section">
+    <h2>Savings goals</h2>
+    <div class="goals" id="goals"></div>
+    <form id="goal-form" novalidate>
+      <input id="goal-name" placeholder="New goal, e.g. Trip to Japan" aria-label="Goal name" autocomplete="off">
+      <div class="row">
+        <input id="goal-target" inputmode="decimal" placeholder="Target, e.g. 2000" aria-label="Target amount in euros" autocomplete="off">
+        <input id="goal-date" type="date" aria-label="Target date">
+      </div>
+      <p class="error" id="goal-error" hidden></p>
+      <button class="ghost" type="submit">Add goal</button>
+    </form>
+  </section>
+
+  <section class="section">
     <h2>Backup</h2>
     <p class="hint">Tap "Copy my data" and paste the text somewhere safe, like Notes or an email to yourself. To restore, paste a backup into the box and tap "Restore".</p>
     <textarea id="backup-text" rows="5" placeholder="Your backup text appears here, or paste one in" aria-label="Backup text" spellcheck="false"></textarea>
@@ -283,13 +308,13 @@ function load() {
   catch (e) { return null; }
 }
 function save() {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ budgets: state.budgets, expenses: state.expenses, recurring: state.recurring })); }
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ budgets: state.budgets, expenses: state.expenses, recurring: state.recurring, goals: state.goals })); }
   catch (e) { /* storage unavailable: the app still works, it just won't remember */ }
 }
 
 // BACKUP: turn your data into text you can copy...
 function exportText() {
-  return JSON.stringify({ budgets: state.budgets, expenses: state.expenses, recurring: state.recurring }, null, 2);
+  return JSON.stringify({ budgets: state.budgets, expenses: state.expenses, recurring: state.recurring, goals: state.goals }, null, 2);
 }
 
 // ...and turn pasted text back into data. Returns null if the text isn't a valid backup.
@@ -325,7 +350,18 @@ function readBackup(text) {
     if (typeof r?.cat !== "string" || !(amount > 0) || !(day >= 1 && day <= 31) || !/^\d{4}-\d{2}$/.test(r.lastMonth)) { skipped++; return; }
     recurring.push({ id: String(r.id ?? "imp-rec" + i), cat: r.cat, amount: Math.round(amount * 100) / 100, note: String(r.note ?? ""), day: Math.round(day), lastMonth: r.lastMonth });
   });
-  return { budgets, expenses, recurring, skipped };
+  // Savings goals: older backups don't have this list either.
+  const isDate = d => /^\d{4}-\d{2}-\d{2}$/.test(d);
+  const goals = [];
+  (Array.isArray(data.goals) ? data.goals : []).forEach((g, i) => {
+    const target = Number(g?.target);
+    if (typeof g?.name !== "string" || !(target > 0) || !isDate(g.date)) { skipped++; return; }
+    const deposits = (Array.isArray(g.deposits) ? g.deposits : [])
+      .filter(d => Number(d?.amount) && isDate(d.date))             // keep deposits with a real amount and date
+      .map((d, j) => ({ id: String(d.id ?? "imp-dep" + j), date: d.date, amount: Math.round(Number(d.amount) * 100) / 100 }));
+    goals.push({ id: String(g.id ?? "imp-goal" + i), name: g.name, target: Math.round(target * 100) / 100, date: g.date, deposits });
+  });
+  return { budgets, expenses, recurring, goals, skipped };
 }
 
 // First visit: fill in example expenses so you can see how it works.
@@ -348,6 +384,7 @@ const state = {
   budgets: saved?.budgets ?? Object.fromEntries(CATEGORIES.map(c => [c.id, c.limit])),
   expenses: saved?.expenses ?? exampleExpenses(),
   recurring: saved?.recurring ?? [],               // monthly expenses (older saved data has none: start empty)
+  goals: saved?.goals ?? [],                       // savings goals (same: start empty if missing)
   viewMonth: monthOf(todayISO()),                  // which month is on screen (not saved)
 };
 
@@ -456,6 +493,9 @@ function render() {
       <button class="del" data-stop="${r.id}" aria-label="Stop repeating">×</button>
     </li>`).join("") : `<p class="empty">Nothing repeats yet. Tick "Repeats every month" when you add rent or a subscription.</p>`;
 
+  // --- Savings goals ---
+  $("goals").innerHTML = state.goals.length ? state.goals.map(goalHTML).join("") : `<p class="empty">No goals yet. Add one below.</p>`;
+
   // --- Example data banner ---
   const hasExamples = state.expenses.some(e => e.example);
   $("banner").innerHTML = hasExamples
@@ -501,6 +541,44 @@ function chartHTML(endMonth, budget) {
     <line class="base" x1="0" x2="${W}" y1="${plotTop + plotH}" y2="${plotTop + plotH}"></line>
     ${budgetLine}
   </svg>`;
+}
+
+// One savings goal card: progress, and how much to save each month to get there.
+function goalHTML(g) {
+  const saved = Math.round(g.deposits.reduce((sum, d) => sum + d.amount, 0) * 100) / 100;   // round: 0.1 + 0.2 isn't exactly 0.3 in computers
+  const missing = g.target - saved;
+  const pct = saved / g.target;
+  const [y, m] = g.date.split("-").map(Number);
+  const endName = new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+
+  // Months left, counting this month: October -> June = 9.
+  const [ty, tm] = todayISO().split("-").map(Number);
+  const monthsLeft = (y * 12 + m) - (ty * 12 + tm) + 1;
+
+  let message;
+  if (missing <= 0) {
+    message = `<p class="hint done">Goal reached! 🎉</p>`;
+  } else if (g.date < todayISO()) {
+    message = `<p class="hint">Date passed · ${eur.format(missing)} still to go</p>`;
+  } else {
+    const perMonth = Math.ceil(missing / monthsLeft * 100) / 100;   // round up to the cent so you don't fall short
+    message = `<p class="hint">Save <strong>${eur.format(perMonth)}</strong> a month until ${endName} (${monthsLeft} month${monthsLeft === 1 ? "" : "s"})</p>`;
+  }
+
+  return `
+    <div class="goal">
+      <div class="goal-top">
+        <span class="goal-name">${esc(g.name)}</span>
+        <button class="del" data-del-goal="${g.id}" aria-label="Delete goal">×</button>
+      </div>
+      <div class="goal-money"><span class="num">${eur.format(saved)}</span> of ${eur.format(g.target)} · ${Math.round(pct * 100)}%</div>
+      <div class="bar"><div class="fill ${missing <= 0 ? "good" : ""}" style="width:${Math.min(Math.max(pct, 0), 1) * 100}%"></div></div>
+      ${message}
+      <form class="deposit" data-goal="${g.id}" novalidate>
+        <input inputmode="decimal" placeholder="Amount (-50 to take out)" aria-label="Deposit amount for ${esc(g.name)}" autocomplete="off">
+        <button class="ghost" type="submit">Add deposit</button>
+      </form>
+    </div>`;
 }
 
 // A progress bar. "today" draws a small tick showing how much of the month has passed.
@@ -625,6 +703,16 @@ document.addEventListener("click", ev => {
       showToast("Stopped repeating", () => { state.recurring.push(removed); save(); render(); });
     }
   }
+  const delGoal = ev.target.closest("[data-del-goal]");
+  if (delGoal) {
+    const idx = state.goals.findIndex(g => g.id === delGoal.dataset.delGoal);
+    const goal = state.goals[idx];
+    if (goal && confirm(`Delete "${goal.name}" and its ${goal.deposits.length} deposits?`)) {
+      state.goals.splice(idx, 1);
+      save(); render();
+      showToast("Goal deleted", () => { state.goals.splice(idx, 0, goal); save(); render(); });   // put it back in the same place
+    }
+  }
   if (ev.target.id === "clear-ex") {
     state.expenses = state.expenses.filter(e => !e.example);
     save(); render();
@@ -664,15 +752,56 @@ $("import-btn").addEventListener("click", () => {
   $("backup-error").hidden = true;
   const ok = confirm(`Replace your ${state.expenses.length} current expenses and your limits with the ${backup.expenses.length} expenses in this backup?`);
   if (!ok) return;
-  const before = { budgets: state.budgets, expenses: state.expenses, recurring: state.recurring };  // kept for Undo
+  const before = { budgets: state.budgets, expenses: state.expenses, recurring: state.recurring, goals: state.goals };  // kept for Undo
   state.budgets = backup.budgets;
   state.expenses = backup.expenses;
   state.recurring = backup.recurring;
+  state.goals = backup.goals;
   addRecurringExpenses();                                           // catch up months since the backup was made
   save(); render();
   $("backup-text").value = "";
   const note = backup.skipped ? ` (${backup.skipped} broken skipped)` : "";
-  showToast(`Restored ${backup.expenses.length} expenses${note}`, () => { state.budgets = before.budgets; state.expenses = before.expenses; state.recurring = before.recurring; save(); render(); });
+  showToast(`Restored ${backup.expenses.length} expenses${note}`, () => { state.budgets = before.budgets; state.expenses = before.expenses; state.recurring = before.recurring; state.goals = before.goals; save(); render(); });
+});
+
+// Savings goals: create a new goal.
+$("goal-form").addEventListener("submit", ev => {
+  ev.preventDefault();
+  const name = $("goal-name").value.trim();
+  const target = parseFloat($("goal-target").value.replace(",", "."));
+  const date = $("goal-date").value;
+  let problem = "";
+  if (!name) problem = "Give your goal a name.";
+  else if (!(target > 0)) problem = "Enter a target above zero, like 2000.";
+  else if (!date) problem = "Pick the date you want to reach it by.";
+  else if (date < todayISO()) problem = "Pick a date in the future.";
+  $("goal-error").textContent = problem;
+  $("goal-error").hidden = !problem;
+  if (problem) return;
+  state.goals.push({ id: Date.now().toString(36), name, target: Math.round(target * 100) / 100, date, deposits: [] });
+  save(); render();
+  $("goal-name").value = ""; $("goal-target").value = ""; $("goal-date").value = "";
+  showToast(`Goal "${esc(name)}" added`);
+});
+
+// Savings goals: add a deposit (or take money out with a minus amount).
+// The deposit forms are created by render(), so one listener on the page catches them all.
+document.addEventListener("submit", ev => {
+  const form = ev.target.closest(".deposit");
+  if (!form) return;
+  ev.preventDefault();
+  const goal = state.goals.find(g => g.id === form.dataset.goal);
+  const amount = Math.round(parseFloat(form.querySelector("input").value.replace(",", ".")) * 100) / 100;
+  const saved = Math.round(goal.deposits.reduce((sum, d) => sum + d.amount, 0) * 100) / 100;
+  if (!amount) { showToast("Enter an amount, like 50 or -20"); return; }
+  if (saved + amount < 0) { showToast(`You can take out at most ${eur.format(saved)}`); return; }
+  const deposit = { id: Date.now().toString(36), date: todayISO(), amount };
+  goal.deposits.push(deposit);
+  save(); render();
+  showToast(`${amount > 0 ? "Saved" : "Took out"} ${eur.format(Math.abs(amount))}`, () => {
+    goal.deposits = goal.deposits.filter(d => d.id !== deposit.id);
+    save(); render();
+  });
 });
 
 $("prev").addEventListener("click", () => { state.viewMonth = shiftMonth(state.viewMonth, -1); render(); });
