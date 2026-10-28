@@ -94,8 +94,8 @@
   /* Add-expense form */
   form { display: grid; gap: 10px; }
   .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  input, select, button { font: inherit; }
-  input, select {
+  input, select, textarea, button { font: inherit; }
+  input, select, textarea {
     width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: 10px;
     border: 1px solid var(--line); background: var(--surface); color: var(--fg);
   }
@@ -130,6 +130,10 @@
   .tag { font-size: 0.68rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--warn); font-weight: 600; }
   .empty { color: var(--muted); padding: 12px 0; margin: 0; }
 
+  /* Backup box */
+  .hint { color: var(--muted); font-size: 0.88rem; margin: 0; }
+  #backup-text { font-family: var(--font-num); font-size: 0.8rem; resize: vertical; }
+
   .banner { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap;
     padding: 10px 14px; border-radius: 10px; border: 1px dashed var(--warn); color: var(--fg); font-size: 0.88rem; }
   .ghost { border: 1px solid var(--line); background: var(--surface); color: var(--fg); padding: 6px 12px; border-radius: 8px; cursor: pointer; font-size: 0.85rem; }
@@ -138,6 +142,7 @@
     bottom: calc(16px + env(safe-area-inset-bottom, 0px));
     background: var(--fg); color: var(--bg); padding: 10px 14px; border-radius: 10px;
     display: flex; gap: 14px; align-items: center; font-size: 0.9rem; }
+  .toast[hidden] { display: none; }   /* without this, "display: flex" above would keep it on screen */
   .toast button { background: none; border: 0; color: var(--bg); font-weight: 700; text-decoration: underline; cursor: pointer; }
 
   @media (max-width: 420px) { .big { font-size: 2rem; } .stats .num { font-size: 0.85rem; } }
@@ -182,6 +187,17 @@
   <section class="section">
     <h2>Expenses this month</h2>
     <ul class="list" id="list"></ul>
+  </section>
+
+  <section class="section">
+    <h2>Backup</h2>
+    <p class="hint">Tap "Copy my data" and paste the text somewhere safe, like Notes or an email to yourself. To restore, paste a backup into the box and tap "Restore".</p>
+    <textarea id="backup-text" rows="5" placeholder="Your backup text appears here, or paste one in" aria-label="Backup text" spellcheck="false"></textarea>
+    <p class="error" id="backup-error" hidden></p>
+    <div class="row">
+      <button class="ghost" type="button" id="copy-btn">Copy my data</button>
+      <button class="ghost" type="button" id="import-btn">Restore</button>
+    </div>
   </section>
 </main>
 
@@ -231,6 +247,38 @@ function load() {
 function save() {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ budgets: state.budgets, expenses: state.expenses })); }
   catch (e) { /* storage unavailable: the app still works, it just won't remember */ }
+}
+
+// BACKUP: turn your data into text you can copy...
+function exportText() {
+  return JSON.stringify({ budgets: state.budgets, expenses: state.expenses }, null, 2);
+}
+
+// ...and turn pasted text back into data. Returns null if the text isn't a valid backup.
+// Broken expenses are skipped (and counted) instead of breaking the whole restore.
+function readBackup(text) {
+  let data;
+  try { data = JSON.parse(text); } catch (e) { return null; }       // not valid JSON text
+  if (!data || !Array.isArray(data.expenses) || typeof data.budgets !== "object" || data.budgets === null) return null;
+
+  // Limits: use the backup's value if it's a valid number, otherwise the default limit.
+  const budgets = {};
+  CATEGORIES.forEach(c => {
+    const v = Number(data.budgets[c.id]);
+    budgets[c.id] = v >= 0 ? Math.round(v * 100) / 100 : c.limit;
+  });
+
+  // Expenses: keep only rows with a real date, a category and an amount above zero.
+  const expenses = [];
+  let skipped = 0;
+  data.expenses.forEach((e, i) => {
+    const amount = Number(e?.amount);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(e?.date) || typeof e.cat !== "string" || !(amount > 0)) { skipped++; return; }
+    const row = { id: String(e.id ?? "imp" + i), date: e.date, cat: e.cat, amount: Math.round(amount * 100) / 100, note: String(e.note ?? "") };
+    if (e.example) row.example = true;
+    expenses.push(row);
+  });
+  return { budgets, expenses, skipped };
 }
 
 // First visit: fill in example expenses so you can see how it works.
@@ -389,6 +437,40 @@ document.addEventListener("change", ev => {
     state.budgets[ev.target.dataset.cat] = v >= 0 ? v : 0;
     save(); render();
   }
+});
+
+// Backup: copy all data as text.
+$("copy-btn").addEventListener("click", async () => {
+  const box = $("backup-text");
+  box.value = exportText();
+  $("backup-error").hidden = true;
+  try {
+    await navigator.clipboard.writeText(box.value);                // ask the browser to copy
+    showToast("Copied! Paste it somewhere safe.");
+  } catch (e) {
+    box.select();                                                  // copying blocked: select the text instead
+    showToast("Text selected. Copy it from the box.");
+  }
+});
+
+// Backup: restore from pasted text. Replaces everything, so it asks first.
+$("import-btn").addEventListener("click", () => {
+  const backup = readBackup($("backup-text").value);
+  if (!backup) {
+    $("backup-error").textContent = "That doesn't look like a Pocket Budget backup. Nothing was changed.";
+    $("backup-error").hidden = false;
+    return;
+  }
+  $("backup-error").hidden = true;
+  const ok = confirm(`Replace your ${state.expenses.length} current expenses and your limits with the ${backup.expenses.length} expenses in this backup?`);
+  if (!ok) return;
+  const before = { budgets: state.budgets, expenses: state.expenses };  // kept for Undo
+  state.budgets = backup.budgets;
+  state.expenses = backup.expenses;
+  save(); render();
+  $("backup-text").value = "";
+  const note = backup.skipped ? ` (${backup.skipped} broken skipped)` : "";
+  showToast(`Restored ${backup.expenses.length} expenses${note}`, () => { state.budgets = before.budgets; state.expenses = before.expenses; save(); render(); });
 });
 
 $("prev").addEventListener("click", () => { state.viewMonth = shiftMonth(state.viewMonth, -1); render(); });
