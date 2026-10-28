@@ -130,6 +130,10 @@
   .tag { font-size: 0.68rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--warn); font-weight: 600; }
   .empty { color: var(--muted); padding: 12px 0; margin: 0; }
 
+  /* "Repeats every month" tickbox */
+  .check { display: flex; align-items: center; gap: 8px; font-size: 0.9rem; cursor: pointer; }
+  .check input { width: 18px; height: 18px; margin: 0; padding: 0; accent-color: var(--accent); }
+
   /* Backup box */
   .hint { color: var(--muted); font-size: 0.88rem; margin: 0; }
   #backup-text { font-family: var(--font-num); font-size: 0.8rem; resize: vertical; }
@@ -171,6 +175,7 @@
         <input id="date" type="date" aria-label="Date">
       </div>
       <input id="note" placeholder="Note (optional), e.g. Mercadona" aria-label="Note" autocomplete="off">
+      <label class="check"><input type="checkbox" id="repeat"> Repeats every month (rent, subscriptions…)</label>
       <p class="error" id="form-error" hidden></p>
       <button class="primary" type="submit">Add expense</button>
     </form>
@@ -187,6 +192,11 @@
   <section class="section">
     <h2>Expenses this month</h2>
     <ul class="list" id="list"></ul>
+  </section>
+
+  <section class="section">
+    <h2>Monthly expenses</h2>
+    <ul class="list" id="recurring-list"></ul>
   </section>
 
   <section class="section">
@@ -245,13 +255,13 @@ function load() {
   catch (e) { return null; }
 }
 function save() {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ budgets: state.budgets, expenses: state.expenses })); }
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ budgets: state.budgets, expenses: state.expenses, recurring: state.recurring })); }
   catch (e) { /* storage unavailable: the app still works, it just won't remember */ }
 }
 
 // BACKUP: turn your data into text you can copy...
 function exportText() {
-  return JSON.stringify({ budgets: state.budgets, expenses: state.expenses }, null, 2);
+  return JSON.stringify({ budgets: state.budgets, expenses: state.expenses, recurring: state.recurring }, null, 2);
 }
 
 // ...and turn pasted text back into data. Returns null if the text isn't a valid backup.
@@ -276,9 +286,18 @@ function readBackup(text) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(e?.date) || typeof e.cat !== "string" || !(amount > 0)) { skipped++; return; }
     const row = { id: String(e.id ?? "imp" + i), date: e.date, cat: e.cat, amount: Math.round(amount * 100) / 100, note: String(e.note ?? "") };
     if (e.example) row.example = true;
+    if (e.recurring) row.recurring = true;
     expenses.push(row);
   });
-  return { budgets, expenses, skipped };
+  // Monthly expenses: older backups don't have this list, so start with an empty one.
+  const recurring = [];
+  (Array.isArray(data.recurring) ? data.recurring : []).forEach((r, i) => {
+    const amount = Number(r?.amount);
+    const day = Number(r?.day);
+    if (typeof r?.cat !== "string" || !(amount > 0) || !(day >= 1 && day <= 31) || !/^\d{4}-\d{2}$/.test(r.lastMonth)) { skipped++; return; }
+    recurring.push({ id: String(r.id ?? "imp-rec" + i), cat: r.cat, amount: Math.round(amount * 100) / 100, note: String(r.note ?? ""), day: Math.round(day), lastMonth: r.lastMonth });
+  });
+  return { budgets, expenses, recurring, skipped };
 }
 
 // First visit: fill in example expenses so you can see how it works.
@@ -300,8 +319,28 @@ const saved = load();
 const state = {
   budgets: saved?.budgets ?? Object.fromEntries(CATEGORIES.map(c => [c.id, c.limit])),
   expenses: saved?.expenses ?? exampleExpenses(),
+  recurring: saved?.recurring ?? [],               // monthly expenses (older saved data has none: start empty)
   viewMonth: monthOf(todayISO()),                  // which month is on screen (not saved)
 };
+
+// RECURRING: each monthly expense remembers the last month it was added ("lastMonth").
+// For every month after that, up to this month, add a copy and move "lastMonth" forward.
+// Because "lastMonth" moves forward, opening the app again never adds duplicates,
+// and deleting one month's copy doesn't bring it back.
+// Returns how many expenses were added.
+function addRecurringExpenses() {
+  const thisMonth = monthOf(todayISO());
+  let added = 0;
+  state.recurring.forEach(r => {
+    while (r.lastMonth < thisMonth) {                 // works on text because "2026-09" < "2026-10"
+      r.lastMonth = shiftMonth(r.lastMonth, 1);
+      const day = Math.min(r.day, daysInMonth(r.lastMonth));   // day 31 in February -> last day
+      state.expenses.push({ id: `rec-${r.id}-${r.lastMonth}`, date: `${r.lastMonth}-${pad(day)}`, cat: r.cat, amount: r.amount, note: r.note, recurring: true });
+      added++;
+    }
+  });
+  return added;
+}
 
 // ---------------------------------------------------------------------------
 // 4. RENDER: rebuild the screen from the state. Called after every change.
@@ -372,10 +411,19 @@ function render() {
   $("list").innerHTML = sorted.length ? sorted.map(e => `
     <li>
       <span class="date num">${e.date.slice(8)}/${e.date.slice(5, 7)}</span>
-      <span class="what">${esc(e.note || catName(e.cat))}<small>${catName(e.cat)}${e.example ? ' · <span class="tag">Example</span>' : ""}</small></span>
+      <span class="what">${esc(e.note || catName(e.cat))}<small>${catName(e.cat)}${e.example ? ' · <span class="tag">Example</span>' : ""}${e.recurring ? ' · <span class="tag">Monthly</span>' : ""}</small></span>
       <span class="num">${eur.format(e.amount)}</span>
       <button class="del" data-del="${e.id}" aria-label="Delete expense">×</button>
     </li>`).join("") : `<p class="empty">Nothing logged this month yet. Add your first expense above.</p>`;
+
+  // --- Monthly expenses ---
+  $("recurring-list").innerHTML = state.recurring.length ? state.recurring.map(r => `
+    <li>
+      <span class="date num">Day ${r.day}</span>
+      <span class="what">${esc(r.note || catName(r.cat))}<small>${catName(r.cat)}</small></span>
+      <span class="num">${eur.format(r.amount)}</span>
+      <button class="del" data-stop="${r.id}" aria-label="Stop repeating">×</button>
+    </li>`).join("") : `<p class="empty">Nothing repeats yet. Tick "Repeats every month" when you add rent or a subscription.</p>`;
 
   // --- Example data banner ---
   const hasExamples = state.expenses.some(e => e.example);
@@ -407,11 +455,21 @@ $("add-form").addEventListener("submit", ev => {
   }
   $("form-error").hidden = true;
   const date = $("date").value || todayISO();
-  state.expenses.push({ id: Date.now().toString(36), date, cat: $("category").value, amount: Math.round(amount * 100) / 100, note: $("note").value.trim() });
+  const id = Date.now().toString(36);
+  const repeats = $("repeat").checked;
+  const expense = { id, date, cat: $("category").value, amount: Math.round(amount * 100) / 100, note: $("note").value.trim() };
+  if (repeats) {
+    expense.recurring = true;
+    // Remember it as a monthly expense. It's already added for this date's month,
+    // so addRecurringExpenses() fills in any later months up to today.
+    state.recurring.push({ id, cat: expense.cat, amount: expense.amount, note: expense.note, day: Number(date.slice(8, 10)), lastMonth: monthOf(date) });
+  }
+  state.expenses.push(expense);
+  addRecurringExpenses();
   state.viewMonth = monthOf(date);                                 // jump to the month you just added to
   save(); render();
-  $("amount").value = ""; $("note").value = "";
-  showToast(`Added ${eur.format(amount)}`);
+  $("amount").value = ""; $("note").value = ""; $("repeat").checked = false;
+  showToast(`Added ${eur.format(amount)}${repeats ? " · repeats monthly" : ""}`);
 });
 
 // Event delegation: one listener on the page handles buttons that render() creates later.
@@ -423,6 +481,15 @@ document.addEventListener("click", ev => {
       const [removed] = state.expenses.splice(idx, 1);
       save(); render();
       showToast("Expense deleted", () => { state.expenses.push(removed); save(); render(); });
+    }
+  }
+  const stop = ev.target.closest("[data-stop]");
+  if (stop) {
+    const idx = state.recurring.findIndex(r => r.id === stop.dataset.stop);
+    if (idx > -1) {
+      const [removed] = state.recurring.splice(idx, 1);           // expenses already added stay
+      save(); render();
+      showToast("Stopped repeating", () => { state.recurring.push(removed); save(); render(); });
     }
   }
   if (ev.target.id === "clear-ex") {
@@ -464,13 +531,15 @@ $("import-btn").addEventListener("click", () => {
   $("backup-error").hidden = true;
   const ok = confirm(`Replace your ${state.expenses.length} current expenses and your limits with the ${backup.expenses.length} expenses in this backup?`);
   if (!ok) return;
-  const before = { budgets: state.budgets, expenses: state.expenses };  // kept for Undo
+  const before = { budgets: state.budgets, expenses: state.expenses, recurring: state.recurring };  // kept for Undo
   state.budgets = backup.budgets;
   state.expenses = backup.expenses;
+  state.recurring = backup.recurring;
+  addRecurringExpenses();                                           // catch up months since the backup was made
   save(); render();
   $("backup-text").value = "";
   const note = backup.skipped ? ` (${backup.skipped} broken skipped)` : "";
-  showToast(`Restored ${backup.expenses.length} expenses${note}`, () => { state.budgets = before.budgets; state.expenses = before.expenses; save(); render(); });
+  showToast(`Restored ${backup.expenses.length} expenses${note}`, () => { state.budgets = before.budgets; state.expenses = before.expenses; state.recurring = before.recurring; save(); render(); });
 });
 
 $("prev").addEventListener("click", () => { state.viewMonth = shiftMonth(state.viewMonth, -1); render(); });
@@ -487,5 +556,7 @@ function showToast(text, undo) {
   toastTimer = setTimeout(() => { t.hidden = true; }, 4000);
 }
 
+// Start: add this month's rent, subscriptions etc. if they're not there yet, then draw the screen.
+if (addRecurringExpenses() > 0) save();
 render();
 </script>
