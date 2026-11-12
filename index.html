@@ -205,7 +205,7 @@
     <h2 id="form-title">Add expense</h2>
     <form id="add-form" novalidate>
       <input id="quick" placeholder='Quick add, e.g. "lunch 12,50 yesterday"' aria-label="Quick add" autocomplete="off" enterkeyhint="done">
-      <p class="hint" id="quick-hint">Fills in the fields below. Check them, then tap Add expense.</p>
+      <p class="hint" id="quick-hint">Works in English or Spanish. Fills in the fields below; check them, then tap Add expense.</p>
       <input id="amount" inputmode="decimal" placeholder="0,00 €" aria-label="Amount in euros" autocomplete="off">
       <div class="row">
         <select id="category" aria-label="Category"></select>
@@ -274,15 +274,21 @@
 // ---------------------------------------------------------------------------
 // 1. SETTINGS: categories and their default monthly limits (in euros).
 //    Edit this list to change your categories.
-//    "words" are what Quick add looks for (lowercase). Add your own shops and habits!
+//    "words" are what Quick add looks for (lowercase, no accents). Add your own shops and habits!
 // ---------------------------------------------------------------------------
 const CATEGORIES = [
-  { id: "rent",      name: "Rent & bills",    limit: 700, words: ["rent", "bills", "electricity", "water", "gas", "internet", "wifi"] },
-  { id: "groceries", name: "Groceries",       limit: 250, words: ["mercadona", "lidl", "aldi", "carrefour", "dia", "consum", "bonpreu", "supermarket", "groceries"] },
-  { id: "eating",    name: "Eating out",      limit: 120, words: ["lunch", "dinner", "breakfast", "brunch", "coffee", "cafe", "restaurant", "tapas", "pizza", "burger"] },
-  { id: "transport", name: "Transport",       limit: 40,  words: ["metro", "bus", "taxi", "uber", "cabify", "train", "renfe", "bicing", "parking", "petrol"] },
-  { id: "subs",      name: "Subscriptions",   limit: 30,  words: ["spotify", "netflix", "hbo", "disney", "prime", "icloud", "youtube", "gym", "subscription"] },
-  { id: "fun",       name: "Fun & going out", limit: 100, words: ["cinema", "movie", "concert", "bar", "drinks", "party", "club", "museum", "tickets"] },
+  { id: "rent",      name: "Rent & bills",    limit: 700, words: ["rent", "bills", "electricity", "water", "gas", "internet", "wifi",
+                                                                  "alquiler", "luz", "agua", "factura"] },
+  { id: "groceries", name: "Groceries",       limit: 250, words: ["mercadona", "lidl", "aldi", "carrefour", "dia", "consum", "bonpreu", "supermarket", "groceries",
+                                                                  "super", "supermercado", "compra", "mercado", "fruteria"] },
+  { id: "eating",    name: "Eating out",      limit: 120, words: ["lunch", "dinner", "breakfast", "brunch", "coffee", "cafe", "restaurant", "tapas", "pizza", "burger",
+                                                                  "comida", "cena", "desayuno", "almuerzo", "restaurante", "menu", "bocadillo"] },
+  { id: "transport", name: "Transport",       limit: 40,  words: ["metro", "bus", "taxi", "uber", "cabify", "train", "renfe", "bicing", "parking", "petrol",
+                                                                  "autobus", "tren", "gasolina", "aparcamiento"] },
+  { id: "subs",      name: "Subscriptions",   limit: 30,  words: ["spotify", "netflix", "hbo", "disney", "prime", "icloud", "youtube", "gym", "subscription",
+                                                                  "claude", "chatgpt", "suscripcion", "gimnasio"] },
+  { id: "fun",       name: "Fun & going out", limit: 100, words: ["cinema", "movie", "concert", "bar", "drinks", "party", "club", "museum", "tickets",
+                                                                  "cine", "concierto", "copas", "cervezas", "fiesta", "museo", "entradas", "discoteca"] },
   { id: "other",     name: "Other",           limit: 60,  words: [] },
 ];
 
@@ -303,6 +309,7 @@ function shiftDay(iso, delta) {                                // "2026-10-01", 
   return toISO(new Date(y, m - 1, d + delta));
 }
 const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];  // same order as getDay()
+const WEEKDAYS_ES = ["domingo", "lunes", "martes", "miercoles", "jueves", "viernes", "sabado"];   // Spanish, same order
 function shiftMonth(ym, delta) {
   const [y, m] = ym.split("-").map(Number);
   const d = new Date(y, m - 1 + delta, 1);
@@ -699,18 +706,23 @@ function parseQuick(text) {
   const noteWords = [];
 
   text.trim().split(/\s+/).forEach(word => {
-    const w = word.toLowerCase();
+    // Lowercase, and remove accents so "Miércoles" and "miercoles" are the same word:
+    // normalize("NFD") splits "é" into "e" + an accent mark, then replace() deletes the marks.
+    const w = word.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
     const money = w.replace("€", "");
     const dayMonth = w.match(/^(\d{1,2})\/(\d{1,2})$/);         // "3/10" -> ["3/10", "3", "10"]
 
     if (!result.amount && /^\d+([.,]\d{1,2})?$/.test(money)) {   // a number like 12, 12,50 or 12.50
       result.amount = money;
-    } else if (w === "today") {
+    } else if (w === "today" || w === "hoy") {
       result.date = today;
-    } else if (w === "yesterday") {
+    } else if (w === "yesterday" || w === "ayer") {
       result.date = shiftDay(today, -1);
-    } else if (WEEKDAYS.includes(w)) {                            // most recent day with that name (today counts)
-      const daysAgo = (new Date().getDay() - WEEKDAYS.indexOf(w) + 7) % 7;
+    } else if (w === "anteayer") {                                // the day before yesterday
+      result.date = shiftDay(today, -2);
+    } else if (WEEKDAYS.includes(w) || WEEKDAYS_ES.includes(w)) { // most recent day with that name (today counts)
+      const dayNumber = WEEKDAYS.includes(w) ? WEEKDAYS.indexOf(w) : WEEKDAYS_ES.indexOf(w);   // 0 = Sunday
+      const daysAgo = (new Date().getDay() - dayNumber + 7) % 7;
       result.date = shiftDay(today, -daysAgo);
     } else if (dayMonth) {                                        // day/month, Spanish style
       const [, d, m] = dayMonth.map(Number);
@@ -718,7 +730,7 @@ function parseQuick(text) {
       if (date.getMonth() !== m - 1) return;                      // not a real date (like 31/2): ignore it
       if (toISO(date) > today) date = new Date(date.getFullYear() - 1, m - 1, d);  // in the future? must be last year
       result.date = toISO(date);
-    } else if (w === "€" || w === "eur" || w === "euros" || w === "on") {
+    } else if (w === "€" || w === "eur" || w === "euros" || w === "on" || w === "el") {
       // little words we don't want in the note
     } else {
       if (!result.cat) {
