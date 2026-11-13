@@ -25,12 +25,10 @@ I'm a complete beginner at coding and I'm learning JavaScript while building thi
 
 ## Roadmap (in order)
 
-1. **Edit an expense:** tap an expense in the list to change its amount, category, date or note, instead of deleting and re-adding it.
-2. **Spanish in Quick add:** understand Spanish words too, like `ayer` (yesterday), `hoy` (today), `lunes`…`domingo` (weekdays), and category words like `comida` or `cena`. Good one to try in hint mode.
-3. **Category breakdown:** for the month on screen, a simple hand-drawn SVG chart showing which categories the money went to (no chart library).
-4. **Merge restore:** a second Restore option that adds the expenses from a backup that are missing, instead of replacing everything. Makes moving data between phone and laptop safe. Ask before changing any data.
-5. **Spreadsheet export:** a button that gives my expenses as CSV text I can paste into Google Sheets or Excel.
-6. **AI extras (optional, decide later):** use my own Claude API key (stored only on my device, never in the code) to read a receipt photo into the Add expense form, or to give a short plain-language review of my month. Always let me check before anything is saved, and only send the data the feature needs.
+1. **Category breakdown:** for the month on screen, a simple hand-drawn SVG chart showing which categories the money went to (no chart library).
+2. **Merge restore:** a second Restore option that adds the expenses from a backup that are missing, instead of replacing everything. Makes moving data between phone and laptop safe. Ask before changing any data.
+3. **Spreadsheet export:** a button that gives my expenses as CSV text I can paste into Google Sheets or Excel.
+4. **AI extras (optional, decide later):** use my own Claude API key (stored only on my device, never in the code) to read a receipt photo into the Add expense form, or to give a short plain-language review of my month. Always let me check before anything is saved, and only send the data the feature needs.
 
 ## Done
 
@@ -39,6 +37,8 @@ I'm a complete beginner at coding and I'm learning JavaScript while building thi
 - 6-month chart: spending per month with a budget line; tap a bar to jump to that month.
 - Quick add: type "lunch 12,50 yesterday" and the form fills itself in (no AI).
 - Savings goals: target and date, deposits and withdrawals, how much to save per month.
+- Edit an expense: tap it to change it; for a monthly expense, choose "just this month" or "this and future months".
+- Spanish in Quick add: `hoy`, `ayer`, `anteayer`, Spanish weekdays and category words; accents are ignored.
 
 The saved data (key `pocket-budget-v1`) holds `budgets`, `expenses`, `recurring` and `goals`. Older saved data or backups may be missing the newer lists, so always treat a missing list as empty.
 
