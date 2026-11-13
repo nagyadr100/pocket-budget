@@ -36,6 +36,9 @@
     --font-display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
     --font-body: "Figtree", "Segoe UI", system-ui, sans-serif;
     --font-num: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+    /* Category colors for the donut chart: mid-tones that are easy to see on light and dark backgrounds */
+    --cat-rent: #4f7fe0; --cat-groceries: #2e9e68; --cat-eating: #e0862a; --cat-transport: #8b62d6;
+    --cat-subs: #d24f97; --cat-fun: #c7a020; --cat-other: #8794a3;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
@@ -117,6 +120,17 @@
   }
   .error { color: var(--bad); font-size: 0.85rem; margin: 0; }
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* Category breakdown: donut chart + list, biggest first */
+  .breakdown { display: grid; gap: 14px; justify-items: center; }
+  .donut { display: block; width: 160px; height: 160px; }
+  .donut .track { stroke: var(--line); }
+  .donut .total { fill: var(--fg); font-family: var(--font-display); font-size: 15px; font-weight: 700; text-anchor: middle; }
+  .donut .sub { fill: var(--muted); font-family: var(--font-body); font-size: 8px; text-anchor: middle; }
+  .legend { list-style: none; margin: 0; padding: 0; width: 100%; display: grid; gap: 8px; }
+  .legend li { display: grid; grid-template-columns: 12px 1fr auto 3em; gap: 10px; align-items: center; font-size: 0.9rem; }
+  .legend .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .legend .pct { color: var(--muted); text-align: right; }
 
   /* Category list */
   .section { display: grid; gap: 12px; }
@@ -222,6 +236,11 @@
       <button class="primary" type="submit" id="submit-btn">Add expense</button>
       <button class="ghost" type="button" id="cancel-edit" hidden>Cancel</button>
     </form>
+  </section>
+
+  <section class="section">
+    <h2>Where the money went</h2>
+    <div class="breakdown" id="breakdown"></div>
   </section>
 
   <section class="section">
@@ -483,6 +502,9 @@ function render() {
   // --- 6-month chart ---
   $("chart").innerHTML = chartHTML(ym, totalBudget);
 
+  // --- Category breakdown (donut) ---
+  $("breakdown").innerHTML = breakdownHTML(spentByCat, totalSpent);
+
   // --- Categories ---
   $("cats").innerHTML = CATEGORIES.map(c => {
     const limit = Number(state.budgets[c.id]) || 0;
@@ -613,6 +635,50 @@ function goalHTML(g) {
         <button class="ghost" type="submit">Add deposit</button>
       </form>
     </div>`;
+}
+
+// The category breakdown: a donut (ring) chart plus a list, biggest category first.
+// Each slice is the same circle outline, but only part of the line is drawn:
+// the outline is 2 × π × radius long, and a 30% slice draws 30% of that length,
+// starting where the previous slice ended.
+function breakdownHTML(spentByCat, total) {
+  if (total <= 0) return `<p class="empty">Nothing spent this month yet.</p>`;
+
+  const slices = Object.entries(spentByCat)              // [["rent", 650], ["groceries", 137.4], ...]
+    .filter(([, amount]) => amount > 0)
+    .sort((a, b) => b[1] - a[1]);                         // biggest first
+  const known = id => CATEGORIES.find(c => c.id === id);
+  const color = id => known(id) ? `var(--cat-${id})` : "var(--muted)";
+
+  const r = 48, length = 2 * Math.PI * r;                 // the ring's full outline length
+  let start = 0;                                          // how far along the ring the next slice starts
+  const rings = slices.map(([id, amount]) => {
+    const part = amount / total * length;
+    const gap = slices.length > 1 ? Math.min(1.5, part / 2) : 0;   // tiny gap between slices
+    const ring = `<circle cx="60" cy="60" r="${r}" fill="none" stroke="${color(id)}" stroke-width="16"
+      stroke-dasharray="${part - gap} ${length - part + gap}" stroke-dashoffset="${-start}" transform="rotate(-90 60 60)"></circle>`;
+    start += part;
+    return ring;
+  }).join("");
+
+  const legend = slices.map(([id, amount]) => {
+    const pct = Math.round(amount / total * 100);
+    return `<li>
+      <span class="dot" style="background:${color(id)}"></span>
+      <span>${esc(known(id)?.name ?? id)}</span>
+      <span class="num">${eur.format(amount)}</span>
+      <span class="pct">${pct < 1 ? "&lt;1" : pct}%</span>
+    </li>`;
+  }).join("");
+
+  return `
+    <svg class="donut" viewBox="0 0 120 120" role="img" aria-label="Share of spending per category">
+      <circle class="track" cx="60" cy="60" r="${r}" fill="none" stroke-width="16"></circle>
+      ${rings}
+      <text class="total" x="60" y="62">${eurShort.format(total)}</text>
+      <text class="sub" x="60" y="74">spent</text>
+    </svg>
+    <ul class="legend">${legend}</ul>`;
 }
 
 // A progress bar. "today" draws a small tick showing how much of the month has passed.
